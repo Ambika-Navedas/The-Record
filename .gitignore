@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Secrets — real credentials live only in server/.env, never committed
+server/.env
+.env
+.env.local
+
+# Local data / user uploads
+server/uploads/
+server/data.sqlite
+server/*.sqlite
+server/*.sqlite3
+
+# Build output
+app/dist/
+server/dist/
+
+# Local tool state
+.claude/
+.gstack/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.log

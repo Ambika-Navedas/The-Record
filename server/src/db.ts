@@ -252,6 +252,21 @@ pool
       mime_type   TEXT NOT NULL,
       created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    -- CSRF state for OAuth redirect round trips (Google login in auth.ts; Zoom/Google
+    -- Calendar/Gmail connect flows in integrations.ts). Was an in-memory Map/Set — worked for a
+    -- single long-running process, but the "start" and "callback" legs of an OAuth flow are two
+    -- separate HTTP requests, and Vercel gives no guarantee they land on the same serverless
+    -- instance. A DB row survives that gap the same way the sessions table already does for
+    -- logins. user_id/org_id/provider are NULL for the bare login-CSRF case (no user yet).
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT REFERENCES users(id),
+      org_id      TEXT REFERENCES organizations(id),
+      provider    TEXT,
+      expires_at  TIMESTAMPTZ NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `)
   .catch((err) => {
     // No process.exit() here — this file also loads inside Vercel's serverless function, where

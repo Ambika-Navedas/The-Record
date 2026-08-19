@@ -181,32 +181,35 @@ function googleLoginConfig() {
   }
 }
 
-// Short-lived, in-memory, single-process — same reasoning as integrations.ts's pendingStates.
-// No userId/orgId to carry (nobody's logged in yet); this is purely an anti-CSRF nonce proving
-// the callback is completing a flow this server actually started.
-const pendingLoginStates = new Set<string>()
+// Backed by the oauth_states table (db.ts), not memory — the "start" and "callback" legs of
+// this redirect are separate HTTP requests, and nothing guarantees they land on the same
+// serverless instance. No userId/orgId to carry (nobody's logged in yet); this is purely an
+// anti-CSRF nonce proving the callback is completing a flow this server actually started.
 const LOGIN_STATE_TTL_MS = 5 * 60_000
 
-function createLoginState(): string {
+async function createLoginState(): Promise<string> {
   const state = randomBytes(16).toString('hex')
-  pendingLoginStates.add(state)
-  setTimeout(() => pendingLoginStates.delete(state), LOGIN_STATE_TTL_MS)
+  await pool.query('INSERT INTO oauth_states (id, expires_at) VALUES ($1, $2)', [
+    state,
+    new Date(Date.now() + LOGIN_STATE_TTL_MS),
+  ])
   return state
 }
 
-function consumeLoginState(state: string): boolean {
-  const had = pendingLoginStates.has(state)
-  pendingLoginStates.delete(state)
-  return had
+async function consumeLoginState(state: string): Promise<boolean> {
+  const { rows } = await pool.query('DELETE FROM oauth_states WHERE id = $1 AND expires_at > now() RETURNING id', [
+    state,
+  ])
+  return rows.length > 0
 }
 
-authRouter.get('/google', (_req, res) => {
+authRouter.get('/google', async (_req, res) => {
   const c = googleLoginConfig()
   if (!c.clientId || !c.clientSecret) {
     res.status(503).json({ error: 'Google sign-in is not configured on this server.' })
     return
   }
-  const state = createLoginState()
+  const state = await createLoginState()
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
   url.searchParams.set('response_type', 'code')
   url.searchParams.set('client_id', c.clientId)
@@ -221,7 +224,7 @@ authRouter.get('/google', (_req, res) => {
 authRouter.get('/google/callback', async (req, res) => {
   const c = googleLoginConfig()
   const { code, state, error } = req.query as { code?: string; state?: string; error?: string }
-  if (error || !code || !state || !consumeLoginState(state)) {
+  if (error || !code || !state || !(await consumeLoginState(state))) {
     console.error('Google login callback rejected', { hasError: !!error, error, hasCode: !!code, hasState: !!state })
     res.redirect(`${c.frontendUrl}/?error=google_auth_failed`)
     return

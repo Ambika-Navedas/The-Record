@@ -51,21 +51,29 @@ function isConfigured(provider: Provider): boolean {
   return provider === 'zoom' ? !!c.zoomClientId && !!c.zoomClientSecret : !!c.googleClientId && !!c.googleClientSecret
 }
 
-// CSRF state for the OAuth redirect round trip. Short-lived and in-memory — this is a
-// single-process demo backend, so there's no need for a shared/persistent store.
-const pendingStates = new Map<string, { userId: string; orgId: string; provider: Provider; expiresAt: number }>()
-
-function createState(userId: string, orgId: string, provider: Provider): string {
+// CSRF state for the OAuth redirect round trip. Backed by the oauth_states table (db.ts), not
+// memory — the "start" and "callback" legs are separate HTTP requests, and on Vercel nothing
+// guarantees they land on the same serverless instance, so an in-memory Map silently loses the
+// entry the callback needs.
+async function createState(userId: string, orgId: string, provider: Provider): Promise<string> {
   const state = randomBytes(16).toString('hex')
-  pendingStates.set(state, { userId, orgId, provider, expiresAt: Date.now() + 5 * 60_000 })
+  await pool.query('INSERT INTO oauth_states (id, user_id, org_id, provider, expires_at) VALUES ($1, $2, $3, $4, $5)', [
+    state,
+    userId,
+    orgId,
+    provider,
+    new Date(Date.now() + 5 * 60_000),
+  ])
   return state
 }
 
-function consumeState(state: string, provider: Provider) {
-  const entry = pendingStates.get(state)
-  pendingStates.delete(state)
-  if (!entry || entry.provider !== provider || entry.expiresAt < Date.now()) return null
-  return entry
+async function consumeState(state: string, provider: Provider): Promise<{ userId: string; orgId: string } | null> {
+  const { rows } = await pool.query(
+    'DELETE FROM oauth_states WHERE id = $1 AND provider = $2 AND expires_at > now() RETURNING user_id, org_id',
+    [state, provider],
+  )
+  const row = rows[0] as { user_id: string; org_id: string } | undefined
+  return row ? { userId: row.user_id, orgId: row.org_id } : null
 }
 
 interface ConnectionRow {
@@ -124,13 +132,13 @@ integrationsRouter.get('/', requireAuth, async (req, res) => {
   })
 })
 
-integrationsRouter.get('/zoom/connect', requireAuth, (req, res) => {
+integrationsRouter.get('/zoom/connect', requireAuth, async (req, res) => {
   if (!isConfigured('zoom')) {
     res.status(503).json({ error: 'Zoom integration is not configured on this server.' })
     return
   }
   const c = config()
-  const state = createState(req.user!.id, req.user!.org_id, 'zoom')
+  const state = await createState(req.user!.id, req.user!.org_id, 'zoom')
   const url = new URL('https://zoom.us/oauth/authorize')
   url.searchParams.set('response_type', 'code')
   url.searchParams.set('client_id', c.zoomClientId)
@@ -142,7 +150,7 @@ integrationsRouter.get('/zoom/connect', requireAuth, (req, res) => {
 integrationsRouter.get('/zoom/callback', async (req, res) => {
   const c = config()
   const { code, state, error } = req.query as { code?: string; state?: string; error?: string }
-  const entry = state ? consumeState(state, 'zoom') : null
+  const entry = state ? await consumeState(state, 'zoom') : null
   if (error || !code || !entry) {
     // Logged (not silent) — a bare redirect here used to swallow the reason, making this
     // exact failure mode (state map wiped by a backend restart between /connect and
@@ -180,13 +188,13 @@ integrationsRouter.get('/zoom/callback', async (req, res) => {
   }
 })
 
-integrationsRouter.get('/google/connect', requireAuth, (req, res) => {
+integrationsRouter.get('/google/connect', requireAuth, async (req, res) => {
   if (!isConfigured('google')) {
     res.status(503).json({ error: 'Google integration is not configured on this server.' })
     return
   }
   const c = config()
-  const state = createState(req.user!.id, req.user!.org_id, 'google')
+  const state = await createState(req.user!.id, req.user!.org_id, 'google')
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
   url.searchParams.set('response_type', 'code')
   url.searchParams.set('client_id', c.googleClientId)
@@ -201,7 +209,7 @@ integrationsRouter.get('/google/connect', requireAuth, (req, res) => {
 integrationsRouter.get('/google/callback', async (req, res) => {
   const c = config()
   const { code, state, error } = req.query as { code?: string; state?: string; error?: string }
-  const entry = state ? consumeState(state, 'google') : null
+  const entry = state ? await consumeState(state, 'google') : null
   if (error || !code || !entry) {
     res.redirect(`${c.frontendUrl}/app/meetings?integration=google&status=error`)
     return
@@ -247,13 +255,13 @@ integrationsRouter.delete('/:provider', requireAuth, async (req, res) => {
   res.status(204).end()
 })
 
-integrationsRouter.get('/gmail/connect', requireAuth, (req, res) => {
+integrationsRouter.get('/gmail/connect', requireAuth, async (req, res) => {
   if (!isConfigured('gmail')) {
     res.status(503).json({ error: 'Gmail integration is not configured on this server.' })
     return
   }
   const c = config()
-  const state = createState(req.user!.id, req.user!.org_id, 'gmail')
+  const state = await createState(req.user!.id, req.user!.org_id, 'gmail')
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth')
   url.searchParams.set('response_type', 'code')
   url.searchParams.set('client_id', c.googleClientId)
@@ -268,7 +276,7 @@ integrationsRouter.get('/gmail/connect', requireAuth, (req, res) => {
 integrationsRouter.get('/gmail/callback', async (req, res) => {
   const c = config()
   const { code, state, error } = req.query as { code?: string; state?: string; error?: string }
-  const entry = state ? consumeState(state, 'gmail') : null
+  const entry = state ? await consumeState(state, 'gmail') : null
   if (error || !code || !entry) {
     console.error('Gmail OAuth callback rejected', { hasError: !!error, error, hasCode: !!code, hasState: !!state, stateMatched: !!entry })
     res.redirect(`${c.frontendUrl}/app/knowledge?integration=gmail&status=error`)

@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { pool } from '../db.ts'
 import { requireAuth } from '../auth.ts'
 import { upsertDocument } from '../graph.ts'
-import { deleteFile, isRemoteUrl, localFilePath } from '../storage.ts'
+import { deleteFile, isDbBlob, isRemoteUrl, localFilePath, readDbBlob } from '../storage.ts'
 
 export const knowledgeRouter = Router()
 knowledgeRouter.use(requireAuth)
@@ -168,6 +168,13 @@ knowledgeRouter.get('/:id/download', async (req, res) => {
   }
   if (isRemoteUrl(row.storage_path)) {
     res.redirect(row.storage_path)
+    return
+  }
+  if (isDbBlob(row.storage_path)) {
+    const { data } = await readDbBlob(row.storage_path)
+    res.set('Content-Type', row.mime_type ?? 'application/octet-stream')
+    res.set('Content-Disposition', `attachment; filename="${row.file_name ?? 'document'}"`)
+    res.send(data)
     return
   }
   const filePath = localFilePath(row.storage_path)

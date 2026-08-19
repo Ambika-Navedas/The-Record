@@ -5,7 +5,7 @@ import bcrypt from 'bcryptjs'
 import { pool } from '../db.ts'
 import { requireAdmin, requireAuth } from '../auth.ts'
 import { notify } from '../notifications.ts'
-import { isRemoteUrl, localFilePath } from '../storage.ts'
+import { isDbBlob, isRemoteUrl, localFilePath, readDbBlob } from '../storage.ts'
 
 export const usersRouter = Router()
 usersRouter.use(requireAuth)
@@ -272,11 +272,17 @@ usersRouter.get('/:id/avatar', async (req, res) => {
     return
   }
   // Blob-backed avatars are already a public URL — redirect rather than proxying the bytes
-  // through this server. Local-disk avatars (dev, or any host with real disk) still serve the
-  // file directly, exactly as before — the frontend's `/users/:id/avatar` URL never changes
-  // either way, only what's behind it.
+  // through this server. Postgres- and local-disk-backed avatars still serve the bytes directly,
+  // exactly as before — the frontend's `/users/:id/avatar` URL never changes either way, only
+  // what's behind it.
   if (isRemoteUrl(row.avatar_path)) {
     res.redirect(row.avatar_path)
+    return
+  }
+  if (isDbBlob(row.avatar_path)) {
+    const { data, mimeType } = await readDbBlob(row.avatar_path)
+    res.set('Content-Type', mimeType)
+    res.send(data)
     return
   }
   const filePath = localFilePath(row.avatar_path)

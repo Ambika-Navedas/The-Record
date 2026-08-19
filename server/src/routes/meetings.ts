@@ -15,7 +15,7 @@ import {
   upsertMeeting,
   upsertTask,
 } from '../graph.ts'
-import { deleteFile, isRemoteUrl, localFilePath, saveFile } from '../storage.ts'
+import { deleteFile, isDbBlob, isRemoteUrl, localFilePath, readDbBlob, saveFile } from '../storage.ts'
 
 export const meetingsRouter = Router()
 meetingsRouter.use(requireAuth)
@@ -315,6 +315,13 @@ meetingsRouter.get('/:id/assets/:assetId/download', async (req, res) => {
   // at upload time, not guessed at here.
   if (isRemoteUrl(asset.storage_path)) {
     res.redirect(asset.storage_path)
+    return
+  }
+  if (isDbBlob(asset.storage_path)) {
+    const { data } = await readDbBlob(asset.storage_path)
+    res.set('Content-Type', asset.mime_type)
+    res.set('Content-Disposition', `attachment; filename="${asset.filename}"`)
+    res.send(data)
     return
   }
   const filePath = localFilePath(asset.storage_path)

@@ -241,6 +241,17 @@ pool
       notified_at  TIMESTAMPTZ, -- NULL = not yet converted into a notification (only relevant once due_at has passed)
       created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    -- Opt-in file storage backend (FILE_STORAGE=postgres — see storage.ts) for hosts with no
+    -- persistent disk and no separate blob store, e.g. a Vercel deploy without Vercel Blob added.
+    -- Deliberately its own table rather than a column on each file-owning table (avatars, meeting
+    -- assets, project docs) — one shared blob store, referenced by storage_path holding 'db:<id>'.
+    CREATE TABLE IF NOT EXISTS file_blobs (
+      id          TEXT PRIMARY KEY,
+      data        BYTEA NOT NULL,
+      mime_type   TEXT NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `)
   .catch((err) => {
     console.error('Schema init failed:', err)

@@ -1,4 +1,8 @@
-const API_BASE = 'http://localhost:4000/api'
+// VITE_API_BASE_URL is a build-time env var (Vercel project settings, or app/.env.local for a
+// custom local override) — falls back to the local dev server so nothing changes for anyone
+// running `npm run dev` without setting it. Was hardcoded to localhost before this, which meant
+// every deployed build silently tried to call the developer's own machine.
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api'
 
 export class ApiError extends Error {
   status: number

@@ -1,6 +1,5 @@
 import { Router } from 'express'
 import { randomUUID, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import bcrypt from 'bcryptjs'
 import multer from 'multer'
@@ -14,7 +13,7 @@ import {
   USER_SELECT_COLUMNS,
   type AuthedUserRow,
 } from '../auth.ts'
-import { UPLOADS_ROOT } from '../uploadsPath.ts'
+import { deleteFile, saveFile } from '../storage.ts'
 
 export const authRouter = Router()
 
@@ -36,26 +35,30 @@ async function getAuthedUserRow(userId: string): Promise<AuthedUserRow> {
   return rows[0] as AuthedUserRow
 }
 
-// Same disk-storage pattern as meetings.ts's asset uploads, scoped to server/uploads/avatars/<userId>/
-// instead of a meeting id. fileFilter silently drops non-image files (checked via req.file below)
-// rather than erroring through multer's own error path — simpler for a demo-scale upload.
+// Memory storage, not diskStorage — the buffer goes to storage.ts's saveFile(), which picks
+// local disk or Vercel Blob depending on what's configured (see storage.ts). fileFilter silently
+// drops non-image files (checked via req.file below) rather than erroring through multer's own
+// error path — simpler for a demo-scale upload.
 const avatarUpload = multer({
-  storage: multer.diskStorage({
-    destination: (req, _file, cb) => {
-      const dir = path.join(UPLOADS_ROOT, 'avatars', req.user!.id)
-      mkdirSync(dir, { recursive: true })
-      cb(null, dir)
-    },
-    filename: (_req, file, cb) => cb(null, `${randomUUID()}-${file.originalname}`),
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB — a profile photo, not a recording
   fileFilter: (_req, file, cb) => cb(null, file.mimetype.startsWith('image/')),
 })
 
+// Production (Vercel, or any real deploy) needs sameSite:'none' + secure:true, not just
+// secure:true alone — frontend and backend will very likely be on different *.vercel.app
+// subdomains, which count as genuinely different "sites" for cookie purposes (vercel.app is on
+// the public suffix list, same as github.io), and SameSite=Lax blocks a cookie from being sent
+// on cross-site fetch/XHR calls (it only allows top-level navigations through). Without this,
+// login would appear to succeed but every subsequent API call would look logged out — the
+// cookie silently never leaves the browser. Local dev is unaffected: localhost:5173 and
+// localhost:4000 are different origins but the *same site* (site = scheme + registrable domain,
+// port doesn't count), so sameSite:'lax' has always worked there and keeps working.
+const isProduction = process.env.NODE_ENV === 'production'
 const cookieOpts = {
   httpOnly: true,
-  sameSite: 'lax' as const,
-  secure: false, // set true once served over https
+  sameSite: isProduction ? ('none' as const) : ('lax' as const),
+  secure: isProduction,
   maxAge: 30 * 24 * 60 * 60 * 1000,
 }
 
@@ -411,14 +414,14 @@ authRouter.post('/me/avatar', requireAuth, avatarUpload.single('avatar'), async 
   const prior = (await pool.query('SELECT avatar_path FROM users WHERE id = $1', [req.user!.id])).rows[0] as
     | { avatar_path: string | null }
     | undefined
-  await pool.query('UPDATE users SET avatar_path = $1 WHERE id = $2', [
-    path.join('avatars', req.user!.id, req.file.filename),
-    req.user!.id,
-  ])
-  if (prior?.avatar_path) {
-    const oldPath = path.join(UPLOADS_ROOT, prior.avatar_path)
-    if (existsSync(oldPath)) unlinkSync(oldPath)
-  }
+  const storedPath = await saveFile(
+    req.file.buffer,
+    path.join('avatars', req.user!.id),
+    `${randomUUID()}-${req.file.originalname}`,
+    req.file.mimetype,
+  )
+  await pool.query('UPDATE users SET avatar_path = $1 WHERE id = $2', [storedPath, req.user!.id])
+  if (prior?.avatar_path) await deleteFile(prior.avatar_path)
   res.json(toAuthedUser(await getAuthedUserRow(req.user!.id)))
 })
 
@@ -426,10 +429,7 @@ authRouter.delete('/me/avatar', requireAuth, async (req, res) => {
   const prior = (await pool.query('SELECT avatar_path FROM users WHERE id = $1', [req.user!.id])).rows[0] as
     | { avatar_path: string | null }
     | undefined
-  if (prior?.avatar_path) {
-    const oldPath = path.join(UPLOADS_ROOT, prior.avatar_path)
-    if (existsSync(oldPath)) unlinkSync(oldPath)
-  }
+  if (prior?.avatar_path) await deleteFile(prior.avatar_path)
   await pool.query('UPDATE users SET avatar_path = NULL WHERE id = $1', [req.user!.id])
   res.json(toAuthedUser(await getAuthedUserRow(req.user!.id)))
 })

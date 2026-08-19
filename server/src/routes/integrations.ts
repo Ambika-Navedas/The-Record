@@ -1,7 +1,5 @@
 import { Router } from 'express'
 import { randomUUID, randomBytes } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import path from 'node:path'
 import bcrypt from 'bcryptjs'
 import { pool } from '../db.ts'
 import { requireAuth } from '../auth.ts'
@@ -17,7 +15,7 @@ import {
   upsertMeeting,
   upsertTask,
 } from '../graph.ts'
-import { UPLOADS_ROOT } from '../uploadsPath.ts'
+import { saveFile } from '../storage.ts'
 
 export const integrationsRouter = Router()
 // requireAuth is applied per-route below, NOT globally — /zoom/callback and /google/callback
@@ -1020,25 +1018,13 @@ async function storeZoomRecording(
   const buffer = Buffer.from(await res.arrayBuffer())
 
   const filename = labelForRecording(file)
-  const dir = path.join(UPLOADS_ROOT, meetingId)
-  mkdirSync(dir, { recursive: true })
-  const diskFilename = `${randomUUID()}-${filename}`
-  writeFileSync(path.join(dir, diskFilename), buffer)
+  const mimeType = RECORDING_MIME_TYPES[file.fileType] ?? 'application/octet-stream'
+  const storedPath = await saveFile(buffer, meetingId, `${randomUUID()}-${filename}`, mimeType)
 
   await pool.query(
     `INSERT INTO meeting_assets (id, meeting_id, org_id, filename, mime_type, size_bytes, storage_path, uploaded_by, external_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-    [
-      randomUUID(),
-      meetingId,
-      orgId,
-      filename,
-      RECORDING_MIME_TYPES[file.fileType] ?? 'application/octet-stream',
-      buffer.length || file.fileSize,
-      path.join(meetingId, diskFilename),
-      userId,
-      file.id,
-    ],
+    [randomUUID(), meetingId, orgId, filename, mimeType, buffer.length || file.fileSize, storedPath, userId, file.id],
   )
 }
 

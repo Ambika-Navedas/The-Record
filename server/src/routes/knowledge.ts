@@ -1,11 +1,10 @@
 import { Router } from 'express'
 import { randomUUID } from 'node:crypto'
-import { existsSync, unlinkSync } from 'node:fs'
-import path from 'node:path'
+import { existsSync } from 'node:fs'
 import { pool } from '../db.ts'
 import { requireAuth } from '../auth.ts'
 import { upsertDocument } from '../graph.ts'
-import { UPLOADS_ROOT } from '../uploadsPath.ts'
+import { deleteFile, isRemoteUrl, localFilePath } from '../storage.ts'
 
 export const knowledgeRouter = Router()
 knowledgeRouter.use(requireAuth)
@@ -167,7 +166,11 @@ knowledgeRouter.get('/:id/download', async (req, res) => {
     res.status(404).json({ error: 'not_found' })
     return
   }
-  const filePath = path.join(UPLOADS_ROOT, row.storage_path)
+  if (isRemoteUrl(row.storage_path)) {
+    res.redirect(row.storage_path)
+    return
+  }
+  const filePath = localFilePath(row.storage_path)
   if (!existsSync(filePath)) {
     res.status(404).json({ error: 'file_missing' })
     return
@@ -276,11 +279,8 @@ knowledgeRouter.delete('/:id', async (req, res) => {
     return
   }
   await pool.query('DELETE FROM knowledge_documents WHERE id = $1', [req.params.id])
-  // A type='file' row's actual content lives on disk, not in this row — remove it too, same
-  // "delete the DB row and its file together" pattern as meetings.ts's asset delete.
-  if (existing.storage_path) {
-    const filePath = path.join(UPLOADS_ROOT, existing.storage_path)
-    if (existsSync(filePath)) unlinkSync(filePath)
-  }
+  // A type='file' row's actual content lives on disk or Blob, not in this row — remove it too,
+  // same "delete the DB row and its file together" pattern as meetings.ts's asset delete.
+  if (existing.storage_path) await deleteFile(existing.storage_path)
   res.status(204).end()
 })

@@ -1,12 +1,11 @@
 import { Router } from 'express'
 import { randomUUID, randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import path from 'node:path'
 import bcrypt from 'bcryptjs'
 import { pool } from '../db.ts'
 import { requireAdmin, requireAuth } from '../auth.ts'
 import { notify } from '../notifications.ts'
-import { UPLOADS_ROOT } from '../uploadsPath.ts'
+import { isRemoteUrl, localFilePath } from '../storage.ts'
 
 export const usersRouter = Router()
 usersRouter.use(requireAuth)
@@ -272,7 +271,15 @@ usersRouter.get('/:id/avatar', async (req, res) => {
     res.status(404).json({ error: 'not_found' })
     return
   }
-  const filePath = path.join(UPLOADS_ROOT, row.avatar_path)
+  // Blob-backed avatars are already a public URL — redirect rather than proxying the bytes
+  // through this server. Local-disk avatars (dev, or any host with real disk) still serve the
+  // file directly, exactly as before — the frontend's `/users/:id/avatar` URL never changes
+  // either way, only what's behind it.
+  if (isRemoteUrl(row.avatar_path)) {
+    res.redirect(row.avatar_path)
+    return
+  }
+  const filePath = localFilePath(row.avatar_path)
   if (!existsSync(filePath)) {
     res.status(404).json({ error: 'file_missing' })
     return

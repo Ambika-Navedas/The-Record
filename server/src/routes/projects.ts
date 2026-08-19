@@ -1,12 +1,11 @@
 import { Router } from 'express'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import multer from 'multer'
 import { pool } from '../db.ts'
 import { requireAuth } from '../auth.ts'
 import { recordActivity, recordProjectInvolvement, upsertDocument, upsertProject } from '../graph.ts'
-import { UPLOADS_ROOT } from '../uploadsPath.ts'
+import { saveFile } from '../storage.ts'
 
 export const projectsRouter = Router()
 projectsRouter.use(requireAuth)
@@ -164,29 +163,21 @@ projectsRouter.post('/', projectDocUpload.array('files', MAX_PROJECT_DOC_FILES),
   // failure partway through never leaves some files attached and others not.
   const files = (req.files as Express.Multer.File[] | undefined) ?? []
   if (files.length > 0) {
-    const dir = path.join(UPLOADS_ROOT, 'project-docs', id)
-    mkdirSync(dir, { recursive: true })
     const client = await pool.connect()
     try {
       await client.query('BEGIN')
       for (const file of files) {
-        const storedName = `${randomUUID()}-${file.originalname}`
-        writeFileSync(path.join(dir, storedName), file.buffer)
+        const storedPath = await saveFile(
+          file.buffer,
+          path.join('project-docs', id),
+          `${randomUUID()}-${file.originalname}`,
+          file.mimetype,
+        )
         const docId = randomUUID()
         await client.query(
           `INSERT INTO knowledge_documents (id, org_id, project_id, type, title, excerpt, owner_id, keywords, storage_path, file_name, mime_type, size_bytes)
            VALUES ($1, $2, $3, 'file', $4, '', $5, '[]', $6, $7, $8, $9)`,
-          [
-            docId,
-            orgId,
-            id,
-            file.originalname,
-            req.user!.id,
-            path.join('project-docs', id, storedName),
-            file.originalname,
-            file.mimetype,
-            file.size,
-          ],
+          [docId, orgId, id, file.originalname, req.user!.id, storedPath, file.originalname, file.mimetype, file.size],
         )
         // Fire-and-forget-adjacent: awaited so it happens, but outside the SQL transaction —
         // Neo4j isn't transactional with Postgres here, and a graph-sync hiccup must never roll

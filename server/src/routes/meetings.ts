@@ -1,7 +1,6 @@
 import { Router } from 'express'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs'
-import path from 'node:path'
+import { existsSync } from 'node:fs'
 import multer from 'multer'
 import { pool } from '../db.ts'
 import { requireAuth } from '../auth.ts'
@@ -16,20 +15,21 @@ import {
   upsertMeeting,
   upsertTask,
 } from '../graph.ts'
-import { UPLOADS_ROOT } from '../uploadsPath.ts'
+import { deleteFile, isRemoteUrl, localFilePath, saveFile } from '../storage.ts'
 
 export const meetingsRouter = Router()
 meetingsRouter.use(requireAuth)
 
+// Memory storage — the buffer goes to storage.ts's saveFile(). Known real limit worth flagging,
+// not something this swap fixes: Vercel serverless functions themselves cap request body size
+// (roughly 4.5MB on Hobby/Pro) well below this 200MB multer limit, so a real recording upload
+// would be rejected by the platform before this code ever runs. The correct fix for large files
+// on Vercel is a client-side direct-to-Blob upload (browser gets a signed token, uploads straight
+// to Blob, bypassing the function entirely) — a real, separate frontend+backend change, not
+// implemented here. This code is correct and complete for any host with a normal body-size
+// limit (local dev, Railway, Render, a VPS) and for anything under Vercel's function limit.
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: (req, _file, cb) => {
-      const dir = path.join(UPLOADS_ROOT, String(req.params.id))
-      mkdirSync(dir, { recursive: true })
-      cb(null, dir)
-    },
-    filename: (_req, file, cb) => cb(null, `${randomUUID()}-${file.originalname}`),
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 200 * 1024 * 1024 }, // 200MB — generous enough for an audio recording
 })
 
@@ -275,19 +275,16 @@ meetingsRouter.post('/:id/assets', upload.single('file'), async (req, res) => {
     return
   }
   const id = randomUUID()
+  const storedPath = await saveFile(
+    req.file.buffer,
+    meetingId,
+    `${randomUUID()}-${req.file.originalname}`,
+    req.file.mimetype,
+  )
   await pool.query(
     `INSERT INTO meeting_assets (id, meeting_id, org_id, filename, mime_type, size_bytes, storage_path, uploaded_by)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [
-      id,
-      meetingId,
-      orgId,
-      req.file.originalname,
-      req.file.mimetype,
-      req.file.size,
-      path.join(meetingId, req.file.filename),
-      req.user!.id,
-    ],
+    [id, meetingId, orgId, req.file.originalname, req.file.mimetype, req.file.size, storedPath, req.user!.id],
   )
   res.status(201).json({
     id,
@@ -311,7 +308,16 @@ meetingsRouter.get('/:id/assets/:assetId/download', async (req, res) => {
     res.status(404).json({ error: 'not_found' })
     return
   }
-  const filePath = path.join(UPLOADS_ROOT, asset.storage_path)
+  // Blob-backed assets: redirect rather than proxy. Known minor gap — a plain redirect doesn't
+  // carry over res.download()'s forced-download-with-original-filename behavior, so a Blob-backed
+  // asset may open inline in the browser (e.g. a PDF or audio file) instead of downloading. Not
+  // fixed here — would need confirming Vercel Blob's content-disposition options are set correctly
+  // at upload time, not guessed at here.
+  if (isRemoteUrl(asset.storage_path)) {
+    res.redirect(asset.storage_path)
+    return
+  }
+  const filePath = localFilePath(asset.storage_path)
   if (!existsSync(filePath)) {
     res.status(404).json({ error: 'file_missing' })
     return
@@ -333,8 +339,7 @@ meetingsRouter.delete('/:id/assets/:assetId', async (req, res) => {
     return
   }
   await pool.query('DELETE FROM meeting_assets WHERE id = $1', [req.params.assetId])
-  const filePath = path.join(UPLOADS_ROOT, asset.storage_path)
-  if (existsSync(filePath)) unlinkSync(filePath)
+  await deleteFile(asset.storage_path)
   res.status(204).end()
 })
 

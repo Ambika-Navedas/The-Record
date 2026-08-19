@@ -254,6 +254,11 @@ pool
     );
   `)
   .catch((err) => {
+    // No process.exit() here — this file also loads inside Vercel's serverless function, where
+    // exiting kills the whole function process (every in-flight request, not just this one).
+    // A traditional long-running server (local dev, a VPS) would want to fail fast on a broken
+    // startup, but crash-on-schema-error only makes sense when something restarts the process —
+    // on Vercel nothing does, so logging and letting individual requests fail against the pool
+    // is the safer default across both environments.
     console.error('Schema init failed:', err)
-    process.exit(1)
   })

@@ -250,10 +250,16 @@ usersRouter.delete('/:id', requireAdmin, async (req, res) => {
 // Deactivated members are excluded here — this is what every participant/assignee picker in the
 // app (meetings, tasks, worknest, etc.) draws from, so a deactivated person stops being assignable
 // to anything new the moment they're deactivated, without those pages needing their own filter.
+// Excludes placeholder accounts (auto-created by name-matching during Gmail sync — see
+// integrations.ts's findOrCreateAssigneeByFirstName) — nobody can log in as one, so showing them
+// in an assignee/participant/owner picker just adds names nobody can actually act as. They stay
+// real rows with real task assignments; auth.ts's Google login promotes a matching placeholder in
+// place the moment its real owner logs in, so this filter is the only thing that changes once
+// that happens — the person then appears here under their real name automatically.
 usersRouter.get('/', async (req, res) => {
   const orgId = req.user!.org_id
   const { rows } = await pool.query(
-    'SELECT id, name, initials FROM users WHERE org_id = $1 AND disabled_at IS NULL ORDER BY name ASC',
+    "SELECT id, name, initials FROM users WHERE org_id = $1 AND disabled_at IS NULL AND email NOT LIKE '%@placeholder.internal' ORDER BY name ASC",
     [orgId],
   )
   res.json({ items: rows as { id: string; name: string; initials: string }[] })

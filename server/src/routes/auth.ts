@@ -301,12 +301,41 @@ authRouter.get('/google/callback', async (req, res) => {
         .slice(0, 2)
         .toUpperCase()
       const passwordHash = bcrypt.hashSync(randomBytes(16).toString('base64url'), 10)
-      const role = isNewOrg ? 'admin' : 'member'
-      userId = randomUUID()
-      await pool.query(
-        'INSERT INTO users (id, org_id, email, password_hash, name, initials, role) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [userId, org.id, profile.email, passwordHash, name, initials, role],
-      )
+
+      // A placeholder account (integrations.ts's findOrCreateAssigneeByFirstName — auto-created
+      // by first-name matching during Gmail sync, no real email) may already exist for this exact
+      // person, holding real task/notification/leave-balance history. If exactly one placeholder
+      // in this org has a first name matching this Google profile, promote it in place — same id,
+      // so everything already attributed to that name becomes correctly theirs with no
+      // reassignment step. Ambiguous (0 or 2+ matches) falls back to a normal new account, since
+      // guessing wrong would silently hand someone else's task history to a stranger.
+      const firstName = name.split(' ')[0]
+      const placeholderMatches = firstName
+        ? ((
+            await pool.query(
+              "SELECT id FROM users WHERE org_id = $1 AND email LIKE '%@placeholder.internal' AND name ILIKE $2",
+              [org.id, firstName],
+            )
+          ).rows as { id: string }[])
+        : []
+
+      if (placeholderMatches.length === 1) {
+        userId = placeholderMatches[0].id
+        await pool.query('UPDATE users SET email = $1, name = $2, initials = $3, password_hash = $4 WHERE id = $5', [
+          profile.email,
+          name,
+          initials,
+          passwordHash,
+          userId,
+        ])
+      } else {
+        const role = isNewOrg ? 'admin' : 'member'
+        userId = randomUUID()
+        await pool.query(
+          'INSERT INTO users (id, org_id, email, password_hash, name, initials, role) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          [userId, org.id, profile.email, passwordHash, name, initials, role],
+        )
+      }
     }
 
     const { token } = await createSession(userId)

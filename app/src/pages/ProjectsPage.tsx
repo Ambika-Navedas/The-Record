@@ -342,7 +342,7 @@ export function ProjectsPage() {
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
               placeholder="What is this project about?"
               rows={3}
-              className="mb-3.5 w-full resize-none rounded-lg border border-border bg-page px-3 py-2.5 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-70"
+              className="mb-3.5 w-full resize-y rounded-lg border border-border bg-page px-3 py-2.5 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-70"
             />
 
             {displayMode === 'create' && (

@@ -303,18 +303,25 @@ authRouter.get('/google/callback', async (req, res) => {
       const passwordHash = bcrypt.hashSync(randomBytes(16).toString('base64url'), 10)
 
       // A placeholder account (integrations.ts's findOrCreateAssigneeByFirstName — auto-created
-      // by first-name matching during Gmail sync, no real email) may already exist for this exact
-      // person, holding real task/notification/leave-balance history. If exactly one placeholder
-      // in this org has a first name matching this Google profile, promote it in place — same id,
+      // by name matching during Gmail sync, no real email) may already exist for this exact
+      // person, holding real task/notification/leave-balance history. The name a meeting summary
+      // uses for someone isn't reliably their first name — "Mohammed Salim" was extracted as
+      // "Salim" (observed live: his placeholder was created as "Salim", but his Google profile's
+      // first word is "Mohammed", so matching only the first word missed it and created a
+      // duplicate). Checking both the first and last word of the Google profile name against
+      // placeholder names covers that case without widening the match to anything fuzzier. If
+      // exactly one placeholder in this org matches either token, promote it in place — same id,
       // so everything already attributed to that name becomes correctly theirs with no
-      // reassignment step. Ambiguous (0 or 2+ matches) falls back to a normal new account, since
-      // guessing wrong would silently hand someone else's task history to a stranger.
-      const firstName = name.split(' ')[0]
-      const placeholderMatches = firstName
+      // reassignment step. Ambiguous (0 or 2+ matches, including the same placeholder matching via
+      // both tokens) falls back to a normal new account, since guessing wrong would silently hand
+      // someone else's task history to a stranger.
+      const nameParts = name.split(' ').filter(Boolean)
+      const nameTokens = [...new Set([nameParts[0], nameParts[nameParts.length - 1]].filter(Boolean))]
+      const placeholderMatches = nameTokens.length
         ? ((
             await pool.query(
-              "SELECT id FROM users WHERE org_id = $1 AND email LIKE '%@placeholder.internal' AND name ILIKE $2",
-              [org.id, firstName],
+              `SELECT DISTINCT id FROM users WHERE org_id = $1 AND email LIKE '%@placeholder.internal' AND name ILIKE ANY($2)`,
+              [org.id, nameTokens],
             )
           ).rows as { id: string }[])
         : []

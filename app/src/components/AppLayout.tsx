@@ -68,9 +68,9 @@ export function AppLayout() {
       .catch(() => {})
   }, [user])
 
-  // Opening the panel refetches (so anything created since mount shows up) and marks everything
-  // read — no per-item dismiss action, matching the "opening the panel marks them read" behavior
-  // confirmed when this was scoped.
+  // Opening the panel refetches (so anything created since mount shows up) but no longer marks
+  // read on open — that used to clear things while the user was still looking at them. Marking
+  // read now happens on CLOSE instead, in the effect below.
   function handleToggleNotifications() {
     const opening = !notifOpen
     setNotifOpen(opening)
@@ -79,13 +79,23 @@ export function AppLayout() {
       .get<{ items: NotificationItem[]; unreadCount: number }>('/notifications')
       .then((res) => setNotifications(res.items))
       .catch(() => {})
-    if (unreadCount > 0) {
+  }
+
+  // Marks everything shown as read once the panel actually closes, not when it opens — closing is
+  // the real "I've seen this" signal. Keyed off notifOpen's true->false transition (a ref, not the
+  // toggle handler above) so it fires the same way whether the user closes it by clicking the bell
+  // again or by clicking outside the panel — the outside-click effect below sets notifOpen
+  // directly and never goes through handleToggleNotifications.
+  const wasNotifOpen = useRef(false)
+  useEffect(() => {
+    if (wasNotifOpen.current && !notifOpen && unreadCount > 0) {
       api
         .post('/notifications/read-all')
         .then(() => setUnreadCount(0))
         .catch(() => {})
     }
-  }
+    wasNotifOpen.current = notifOpen
+  }, [notifOpen, unreadCount])
 
   if (loading) {
     return <div className="flex min-h-screen items-center justify-center text-sm text-muted">Loading…</div>

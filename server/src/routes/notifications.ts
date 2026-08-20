@@ -13,9 +13,14 @@ interface NotificationRow {
   created_at: string
 }
 
-// GET /api/notifications — caller's own, newest first, capped at 50 (demo-scale; no pagination).
-// unreadCount is a separate COUNT query rather than derived from the capped list, so it stays
-// correct even if unread notifications exist beyond the 50 most recent.
+// GET /api/notifications — caller's own UNREAD notifications, newest first, capped at 50
+// (demo-scale; no pagination). Read ones are deliberately excluded, not just flagged — the panel
+// is meant to empty out once you've seen it, not accumulate a permanent history. Since opening
+// the bell (AppLayout.tsx's handleToggleNotifications) marks everything read right after this
+// fetch, the practical effect is: whatever's showing now stays visible for this view, then is
+// gone the next time the panel opens.
+// unreadCount is a separate COUNT query rather than derived from the list, so it stays correct
+// even if unread notifications exist beyond the 50 most recent.
 //
 // Checks for newly-due reminders first (see server/src/reminders.ts) — the bell is fetched on
 // every page load via AppLayout.tsx, so this is what makes "a reminder becomes a notification
@@ -25,7 +30,7 @@ notificationsRouter.get('/', async (req, res) => {
   const userId = req.user!.id
   await checkDueReminders(orgId, userId)
   const { rows } = await pool.query(
-    'SELECT id, message, read_at, created_at FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50',
+    'SELECT id, message, read_at, created_at FROM notifications WHERE user_id = $1 AND read_at IS NULL ORDER BY created_at DESC LIMIT 50',
     [userId],
   )
   const { rows: countRows } = await pool.query(
